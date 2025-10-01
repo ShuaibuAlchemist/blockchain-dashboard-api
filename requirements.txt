@@ -3,5 +3,4 @@ uvicorn==0.30.0
 dune-client==1.9.2
 pandas==2.2.3
 python-dotenv==1.0.0
-requests==2.32.3
 numpy==1.26.4
