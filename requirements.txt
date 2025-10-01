@@ -1,7 +1,7 @@
-fastapi
-uvicorn
+fastapi==0.111.0
+uvicorn==0.30.0
 dune-client==1.9.2
 pandas==2.2.2
 python-dotenv==1.0.0
 requests==2.31.0
-numpy==1.26
+numpy==1.26.4
