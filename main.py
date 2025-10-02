@@ -193,8 +193,8 @@ def get_market_overview():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/whale-transactions")
-def get_whale_transactions():
+@app.get("/api/whale-transfers")
+def get_whale_transfers():
     """Get recent whale transactions"""
     try:
         df = fetch_dune_whale_data()
