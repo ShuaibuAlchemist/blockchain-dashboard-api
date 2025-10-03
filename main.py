@@ -257,7 +257,7 @@ def get_exchange_flows():
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e), "flows" []}
-        )
+        )
 
 @app.get("/api/flow-summary")
 def get_flow_summary():
