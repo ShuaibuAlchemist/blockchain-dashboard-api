@@ -253,7 +253,11 @@ def get_exchange_flows():
             "count": len(flows)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Backend] Error in /api/exchange-flows: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e), "flows": []}
+        )
 
 @app.get("/api/flow-summary")
 def get_flow_summary():
