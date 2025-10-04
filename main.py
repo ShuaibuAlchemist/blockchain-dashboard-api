@@ -1,5 +1,6 @@
 """
 Complete FastAPI Backend for Blockchain Risk & Transparency Dashboard
+with intelligent caching for optimal performance
 Run with: uvicorn main:app --reload
 """
 
@@ -11,16 +12,14 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from dune_client.client import DuneClient
-from typing import Dict, List
-import sqlite3
+from typing import Dict, List, Optional
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(title="Blockchain Risk Dashboard API")
 
-# Enable CORS for v0.app
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,9 +33,12 @@ DUNE_API_KEY = os.getenv("DUNE_KEY")
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 WHALE_QUERY_ID = 5763322
 INFLOW_QUERY_ID = 5781730
-DB_PATH = "data/blockchain.db"
 
-dune_client = DuneClient(DUNE_API_KEY)
+# Cache configuration (5 minutes)
+CACHE_DURATION = 300
+whale_cache = {"data": None, "timestamp": 0}
+flows_cache = {"data": None, "timestamp": 0}
+prices_cache = {"data": None, "timestamp": 0}
 
 # Contract to token mapping
 CONTRACT_TO_TOKEN = {
@@ -46,38 +48,96 @@ CONTRACT_TO_TOKEN = {
     '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'WBTC'
 }
 
-ASSET_TO_TOKEN = {
-    'usd-coin': 'USDC',
-    'tether': 'USDT',
-    'ethereum': 'ETH',
-    'wrapped-bitcoin': 'WBTC',
-}
-
 # ==========================================
-# DATA COLLECTION FUNCTIONS
+# DATA COLLECTION FUNCTIONS WITH CACHING
 # ==========================================
 
 def fetch_dune_whale_data():
-    """Fetch whale transfers from Dune"""
+    """Fetch whale transfers from Dune with caching"""
+    now = time.time()
+    
+    # Return cached data if fresh
+    if whale_cache["data"] is not None and (now - whale_cache["timestamp"]) < CACHE_DURATION:
+        print(f"Returning cached whale data (age: {int(now - whale_cache['timestamp'])}s)")
+        return whale_cache["data"]
+    
     try:
-        result = dune_client.get_latest_result(WHALE_QUERY_ID)
-        df = pd.DataFrame(result.result.rows)
+        print(f"Executing fresh Dune whale query {WHALE_QUERY_ID}")
         
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+        headers = {"x-dune-api-key": DUNE_API_KEY}
         
-        return df
+        # Execute the query
+        run_query_url = f"https://api.dune.com/api/v1/query/{WHALE_QUERY_ID}/execute"
+        response = requests.post(run_query_url, headers=headers)
+        run_data = response.json()
+        
+        if 'execution_id' not in run_data:
+            print(f"Failed to execute query: {run_data}")
+            return pd.DataFrame()
+        
+        execution_id = run_data['execution_id']
+        print(f"Execution ID: {execution_id}")
+
+        # Poll for completion
+        status = ''
+        max_attempts = 30
+        attempt = 0
+        
+        while status not in ['QUERY_STATE_COMPLETED', 'QUERY_STATE_FAILED'] and attempt < max_attempts:
+            time.sleep(2)
+            status_response = requests.get(
+                f"https://api.dune.com/api/v1/execution/{execution_id}/status",
+                headers=headers
+            )
+            status_data = status_response.json()
+            status = status_data.get('state', '')
+            attempt += 1
+
+        if status == 'QUERY_STATE_COMPLETED':
+            results_url = f"https://api.dune.com/api/v1/execution/{execution_id}/results"
+            results_response = requests.get(results_url, headers=headers)
+            results_json = results_response.json()
+            df = pd.DataFrame(results_json['result']['rows'])
+            
+            print(f"Got {len(df)} whale transactions")
+            
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+            
+            # Update cache
+            whale_cache["data"] = df
+            whale_cache["timestamp"] = now
+            
+            return df
+        else:
+            print(f"Query failed or timed out. Status: {status}")
+            return pd.DataFrame()
+            
     except Exception as e:
         print(f"Error fetching whale data: {e}")
         return pd.DataFrame()
 
 def fetch_dune_exchange_flows():
-    """Fetch exchange inflow/outflow from Dune"""
+    """Fetch exchange inflow/outflow from Dune with caching"""
+    now = time.time()
+    
+    # Return cached data if fresh
+    if flows_cache["data"] is not None and (now - flows_cache["timestamp"]) < CACHE_DURATION:
+        print(f"Returning cached flows data (age: {int(now - flows_cache['timestamp'])}s)")
+        return flows_cache["data"]
+    
     try:
+        print(f"Executing fresh Dune exchange flows query {INFLOW_QUERY_ID}")
+        
         headers = {"x-dune-api-key": DUNE_API_KEY}
         run_query_url = f"https://api.dune.com/api/v1/query/{INFLOW_QUERY_ID}/execute"
         response = requests.post(run_query_url, headers=headers)
         run_data = response.json()
+        
+        if 'execution_id' not in run_data:
+            print(f"Failed to execute query: {run_data}")
+            return pd.DataFrame()
+        
         execution_id = run_data['execution_id']
 
         # Poll for completion
@@ -108,6 +168,12 @@ def fetch_dune_exchange_flows():
             df['contract_address'] = df['contract_address'].str.lower()
             df['token'] = df['contract_address'].map(CONTRACT_TO_TOKEN)
             
+            print(f"Got {len(df)} exchange flow records")
+            
+            # Update cache
+            flows_cache["data"] = df
+            flows_cache["timestamp"] = now
+            
             return df
         else:
             print(f"Query failed or timed out. Status: {status}")
@@ -118,8 +184,16 @@ def fetch_dune_exchange_flows():
         return pd.DataFrame()
 
 def fetch_live_prices():
-    """Fetch current prices from CoinGecko"""
+    """Fetch current prices from CoinGecko with caching"""
+    now = time.time()
+    
+    # Return cached data if fresh (1 minute cache for prices)
+    if prices_cache["data"] is not None and (now - prices_cache["timestamp"]) < 60:
+        print(f"Returning cached prices (age: {int(now - prices_cache['timestamp'])}s)")
+        return prices_cache["data"]
+    
     try:
+        print("Fetching fresh prices from CoinGecko")
         assets = ["ethereum", "bitcoin", "tether", "usd-coin", "wrapped-bitcoin"]
         url = f"{COINGECKO_BASE}/simple/price"
         response = requests.get(url, params={
@@ -131,7 +205,14 @@ def fetch_live_prices():
         })
         
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            print(f"Got prices for {len(data)} assets")
+            
+            # Update cache
+            prices_cache["data"] = data
+            prices_cache["timestamp"] = now
+            
+            return data
         return {}
     except Exception as e:
         print(f"Error fetching prices: {e}")
@@ -150,7 +231,6 @@ def fetch_price_history(days=7):
             data = response.json()
             prices = data.get('prices', [])
             
-            # Convert to dataframe
             df = pd.DataFrame(prices, columns=['timestamp', 'price'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
@@ -169,7 +249,12 @@ def read_root():
     return {
         "status": "active",
         "message": "Blockchain Risk & Transparency Dashboard API",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "cache_status": {
+            "whale_data_age": int(time.time() - whale_cache["timestamp"]) if whale_cache["data"] is not None else None,
+            "flows_data_age": int(time.time() - flows_cache["timestamp"]) if flows_cache["data"] is not None else None,
+            "prices_age": int(time.time() - prices_cache["timestamp"]) if prices_cache["data"] is not None else None
+        }
     }
 
 @app.get("/api/market-overview")
@@ -202,7 +287,6 @@ def get_whale_transfers():
         if df.empty:
             return {"transactions": [], "count": 0}
         
-        # Convert to records
         transactions = []
         for _, row in df.head(100).iterrows():
             transactions.append({
@@ -219,6 +303,7 @@ def get_whale_transfers():
             "count": len(transactions)
         }
     except Exception as e:
+        print(f"Error in whale-transfers endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/exchange-flows")
@@ -230,7 +315,6 @@ def get_exchange_flows():
         if df.empty:
             return {"flows": [], "count": 0}
         
-        # Group by exchange and token
         summary = df.groupby(['exchange', 'token', 'week_start']).agg({
             'inflow': 'sum',
             'outflow': 'sum'
@@ -253,6 +337,7 @@ def get_exchange_flows():
             "count": len(flows)
         }
     except Exception as e:
+        print(f"Error in exchange-flows endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/flow-summary")
@@ -273,11 +358,10 @@ def get_flow_summary():
         total_outflow = df['outflow'].sum()
         net_flow = total_outflow - total_inflow
         
-        # Determine sentiment
         if net_flow > 0:
-            sentiment = "bullish"  # More outflow = accumulation
+            sentiment = "bullish"
         elif net_flow < 0:
-            sentiment = "bearish"  # More inflow = selling pressure
+            sentiment = "bearish"
         else:
             sentiment = "neutral"
         
@@ -285,10 +369,10 @@ def get_flow_summary():
             "total_inflow": float(total_inflow),
             "total_outflow": float(total_outflow),
             "net_flow": float(net_flow),
-            "sentiment": sentiment,
-            "by_token": df.groupby('token')[['inflow', 'outflow']].sum().to_dict('index')
+            "sentiment": sentiment
         }
     except Exception as e:
+        print(f"Error in flow-summary endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/price-history")
@@ -314,49 +398,15 @@ def get_price_history_endpoint(days: int = 7):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/whale-price-overlay")
-def get_whale_price_overlay():
-    """Get whale transactions overlaid with price data"""
-    try:
-        # Fetch both datasets
-        whales_df = fetch_dune_whale_data()
-        prices_df = fetch_price_history(7)
-        
-        if whales_df.empty or prices_df.empty:
-            return {"data": [], "count": 0}
-        
-        # Merge on timestamp (round to hour)
-        whales_df['hour'] = whales_df['timestamp'].dt.floor('H')
-        prices_df['hour'] = prices_df['timestamp'].dt.floor('H')
-        
-        merged = pd.merge(
-            whales_df,
-            prices_df[['hour', 'price']],
-            on='hour',
-            how='left'
-        )
-        
-        data = []
-        for _, row in merged.iterrows():
-            data.append({
-                "timestamp": row['timestamp'].isoformat() if pd.notna(row['timestamp']) else None,
-                "amount": float(row.get('amount', 0)),
-                "token": row.get('token', ''),
-                "price": float(row.get('price', 0)) if pd.notna(row.get('price')) else None,
-                "tx_hash": row.get('tx_hash', '')
-            })
-        
-        return {
-            "data": data,
-            "count": len(data)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/refresh-data")
 def refresh_all_data():
-    """Trigger a refresh of all data"""
+    """Force refresh all cached data"""
     try:
+        # Clear caches to force fresh fetch
+        whale_cache["timestamp"] = 0
+        flows_cache["timestamp"] = 0
+        prices_cache["timestamp"] = 0
+        
         whale_df = fetch_dune_whale_data()
         flows_df = fetch_dune_exchange_flows()
         prices = fetch_live_prices()
