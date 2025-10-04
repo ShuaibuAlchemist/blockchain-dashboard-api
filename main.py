@@ -194,7 +194,7 @@ def get_market_overview():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/whale-transfers")
-def get_whale_transactions():
+def get_whale_transfers():
     """Get recent whale transactions"""
     try:
         df = fetch_dune_whale_data()
@@ -253,11 +253,7 @@ def get_exchange_flows():
             "count": len(flows)
         }
     except Exception as e:
-        print(f"[Backend] Error in /api/exchange-flows: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e), "flows": []}
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/flow-summary")
 def get_flow_summary():
