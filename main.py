@@ -13,6 +13,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from typing import Dict, List, Optional
+from dune_client.client import DuneClient
+import json
 
 # Load environment variables
 load_dotenv()
@@ -33,6 +35,7 @@ DUNE_API_KEY = os.getenv("DUNE_KEY")
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 WHALE_QUERY_ID = 5763322
 INFLOW_QUERY_ID = 5781730
+dune = DuneClient(api_key=DUNE_API_KEY)
 
 # Cache configuration (5 minutes)
 CACHE_DURATION = 300
