@@ -1,6 +1,6 @@
 """
-FastAPI Backend with Persistent Cache Fallback
-Uses last successful Dune results when API limit is reached
+FastAPI Backend with Persistent Cache and Mock Data Fallback
+Uses last successful Dune results, or generates realistic mock data if no cache exists
 """
 
 from fastapi import FastAPI, HTTPException
@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pickle
 from pathlib import Path
+import random
 
 load_dotenv()
 
@@ -43,11 +44,65 @@ whale_cache = {"data": None, "timestamp": 0, "source": "none"}
 flows_cache = {"data": None, "timestamp": 0, "source": "none"}
 
 # ==========================================
+# MOCK DATA GENERATORS
+# ==========================================
+
+def generate_mock_whale_data():
+    """Generate realistic mock whale transfer data"""
+    print("Generating mock whale data")
+    
+    transactions = []
+    now = datetime.now()
+    tokens = ['ETH', 'USDT', 'USDC']
+    
+    for i in range(50):
+        tx_time = now - timedelta(hours=i*2)
+        token = random.choice(tokens)
+        amount = random.uniform(1000, 50000) if token == 'ETH' else random.uniform(1000000, 10000000)
+        
+        transactions.append({
+            'tx_hash': f"0x{''.join(random.choices('0123456789abcdef', k=64))}",
+            'timestamp': tx_time,
+            'from_address': f"0x{''.join(random.choices('0123456789abcdef', k=40))}",
+            'to_address': f"0x{''.join(random.choices('0123456789abcdef', k=40))}",
+            'amount': amount,
+            'token': token
+        })
+    
+    return pd.DataFrame(transactions)
+
+def generate_mock_flow_data():
+    """Generate realistic mock exchange flow data"""
+    print("Generating mock exchange flow data")
+    
+    exchanges = ['Binance', 'Coinbase', 'Kraken']
+    tokens = ['ETH', 'USDT', 'USDC']
+    flows = []
+    now = datetime.now()
+    
+    for week_offset in range(12):
+        week_start = now - timedelta(weeks=week_offset)
+        for exchange in exchanges:
+            for token in tokens:
+                inflow = random.uniform(10000, 100000)
+                outflow = random.uniform(10000, 100000)
+                
+                flows.append({
+                    'exchange': exchange,
+                    'token': token,
+                    'week_start': week_start,
+                    'inflow': inflow,
+                    'outflow': outflow
+                })
+    
+    return pd.DataFrame(flows)
+
+# ==========================================
 # CACHE PERSISTENCE FUNCTIONS
 # ==========================================
 
 def save_cache_to_disk(cache_data, file_path):
-    """Save successful Dune results to disk"""
+    """Save successful results to disk"""
     try:
         with open(file_path, 'wb') as f:
             pickle.dump(cache_data, f)
@@ -56,7 +111,7 @@ def save_cache_to_disk(cache_data, file_path):
         print(f"Failed to save cache: {e}")
 
 def load_cache_from_disk(file_path):
-    """Load last successful Dune results from disk"""
+    """Load last successful results from disk"""
     try:
         if file_path.exists():
             with open(file_path, 'rb') as f:
@@ -67,6 +122,23 @@ def load_cache_from_disk(file_path):
     except Exception as e:
         print(f"Failed to load cache: {e}")
         return None
+
+def initialize_cache_with_mock():
+    """Create initial cache with mock data if no cache exists"""
+    if not WHALE_CACHE_FILE.exists():
+        print("No whale cache found - creating with mock data")
+        df = generate_mock_whale_data()
+        cache_data = {"data": df, "timestamp": time.time(), "source": "mock_initial"}
+        save_cache_to_disk(cache_data, WHALE_CACHE_FILE)
+    
+    if not FLOWS_CACHE_FILE.exists():
+        print("No flows cache found - creating with mock data")
+        df = generate_mock_flow_data()
+        cache_data = {"data": df, "timestamp": time.time(), "source": "mock_initial"}
+        save_cache_to_disk(cache_data, FLOWS_CACHE_FILE)
+
+# Initialize cache on startup
+initialize_cache_with_mock()
 
 # ==========================================
 # DATA FETCHERS WITH PERSISTENT FALLBACK
@@ -87,8 +159,8 @@ def fetch_dune_whale_data():
             print("No Dune API key")
             cached = load_cache_from_disk(WHALE_CACHE_FILE)
             if cached:
-                whale_cache.update({"data": cached["data"], "timestamp": now, "source": "disk_cache"})
-                return cached["data"], "disk_cache"
+                whale_cache.update({"data": cached["data"], "timestamp": now, "source": cached["source"]})
+                return cached["data"], cached["source"]
             return pd.DataFrame(), "none"
         
         print(f"Executing Dune whale query {WHALE_QUERY_ID}")
@@ -154,11 +226,11 @@ def fetch_dune_whale_data():
         print(f"Error fetching from Dune: {e}")
     
     # Fallback to disk cache
-    print("Falling back to cached Dune results from disk")
+    print("Falling back to cached results from disk")
     cached = load_cache_from_disk(WHALE_CACHE_FILE)
     if cached:
-        whale_cache.update({"data": cached["data"], "timestamp": now, "source": "disk_cache"})
-        return cached["data"], "disk_cache"
+        whale_cache.update({"data": cached["data"], "timestamp": now, "source": cached["source"]})
+        return cached["data"], cached["source"]
     
     return pd.DataFrame(), "none"
 
@@ -176,8 +248,8 @@ def fetch_dune_exchange_flows():
         if not DUNE_API_KEY:
             cached = load_cache_from_disk(FLOWS_CACHE_FILE)
             if cached:
-                flows_cache.update({"data": cached["data"], "timestamp": now, "source": "disk_cache"})
-                return cached["data"], "disk_cache"
+                flows_cache.update({"data": cached["data"], "timestamp": now, "source": cached["source"]})
+                return cached["data"], cached["source"]
             return pd.DataFrame(), "none"
         
         print(f"Executing Dune exchange flows query {INFLOW_QUERY_ID}")
@@ -243,11 +315,11 @@ def fetch_dune_exchange_flows():
         print(f"Error fetching from Dune: {e}")
     
     # Fallback to disk cache
-    print("Falling back to cached Dune results from disk")
+    print("Falling back to cached results from disk")
     cached = load_cache_from_disk(FLOWS_CACHE_FILE)
     if cached:
-        flows_cache.update({"data": cached["data"], "timestamp": now, "source": "disk_cache"})
-        return cached["data"], "disk_cache"
+        flows_cache.update({"data": cached["data"], "timestamp": now, "source": cached["source"]})
+        return cached["data"], cached["source"]
     
     return pd.DataFrame(), "none"
 
@@ -287,7 +359,10 @@ def read_root():
             "whale_data": whale_cache.get("source", "none"),
             "flow_data": flows_cache.get("source", "none")
         },
-        "info": "Using cached Dune data when API limit is reached"
+        "cache_info": {
+            "whale_cache_exists": WHALE_CACHE_FILE.exists(),
+            "flows_cache_exists": FLOWS_CACHE_FILE.exists()
+        }
     }
 
 @app.get("/api/whale-transfers")
@@ -299,8 +374,7 @@ def get_whale_transfers():
             return {
                 "transactions": [],
                 "count": 0,
-                "data_source": source,
-                "message": "No data available - Dune limit may be reached"
+                "data_source": source
             }
         
         transactions = []
@@ -332,8 +406,7 @@ def get_exchange_flows():
             return {
                 "flows": [],
                 "count": 0,
-                "data_source": source,
-                "message": "No data available - Dune limit may be reached"
+                "data_source": source
             }
         
         flows = []
