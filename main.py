@@ -1,6 +1,6 @@
 """
 FastAPI Backend with Persistent Cache and Mock Data Fallback
-Uses last successful Dune results, or generates realistic mock data if no cache exists
+Includes stablecoin rotation analysis
 """
 
 from fastapi import FastAPI, HTTPException
@@ -428,6 +428,75 @@ def get_exchange_flows():
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/stablecoin-flows")
+def get_stablecoin_flows():
+    """Get stablecoin rotation data for risk analysis"""
+    try:
+        df, source = fetch_dune_whale_data()
+        
+        if df.empty:
+            return {
+                "stablecoin_flows": [],
+                "risk_mode": "risk-on",
+                "stablecoin_ratio": 0.0,
+                "interpretation": "No data available",
+                "data_source": source
+            }
+        
+        # Separate stablecoins from crypto
+        stablecoins = df[df['token'].isin(['USDT', 'USDC'])].copy()
+        crypto = df[df['token'] == 'ETH'].copy()
+        
+        # Calculate flows by token
+        flows = []
+        for token in ['USDT', 'USDC']:
+            token_data = stablecoins[stablecoins['token'] == token]
+            if not token_data.empty:
+                total_amount = token_data['amount'].sum()
+                flows.append({
+                    "token": token,
+                    "total_flow": float(total_amount),
+                    "transaction_count": len(token_data),
+                    "avg_size": float(token_data['amount'].mean())
+                })
+        
+        # Calculate stablecoin ratio
+        total_stable = stablecoins['amount'].sum() if not stablecoins.empty else 0
+        total_crypto = crypto['amount'].sum() if not crypto.empty else 0
+        total = total_stable + total_crypto
+        
+        ratio = (total_stable / total) if total > 0 else 0
+        
+        # Determine risk mode
+        if ratio > 0.6:
+            risk_mode = "risk-off"
+            interpretation = "High stablecoin activity suggests whales rotating to safety"
+        elif ratio > 0.4:
+            risk_mode = "neutral"
+            interpretation = "Balanced activity between crypto and stablecoins"
+        else:
+            risk_mode = "risk-on"
+            interpretation = "Low stablecoin activity suggests confidence in crypto"
+        
+        return {
+            "stablecoin_flows": flows,
+            "risk_mode": risk_mode,
+            "stablecoin_ratio": float(ratio),
+            "interpretation": interpretation,
+            "total_stablecoin_volume": float(total_stable),
+            "total_crypto_volume": float(total_crypto),
+            "data_source": source
+        }
+    except Exception as e:
+        print(f"Error in stablecoin-flows: {e}")
+        return {
+            "stablecoin_flows": [],
+            "risk_mode": "risk-on",
+            "stablecoin_ratio": 0.0,
+            "interpretation": "Error calculating flows",
+            "data_source": "error"
+        }
 
 @app.get("/api/market-overview")
 def get_market_overview():
