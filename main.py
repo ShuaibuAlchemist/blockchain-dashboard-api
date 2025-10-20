@@ -383,6 +383,6 @@ def get_market_overview():
 # (whale-transfers, exchange-flows, stablecoin-flows, correlation, concentration)
 # Just paste them below without modification if you already have them.
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
